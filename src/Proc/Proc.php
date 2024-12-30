@@ -51,4 +51,14 @@ class Proc
 
         return false;
     }
+
+    /**
+     * @param string|array $entrance
+     *
+     * @return \Ripple\Proc\Future
+     */
+    public static function exec(string|array $entrance = '/bin/sh'): Future
+    {
+        return new Future(Proc::open($entrance));
+    }
 }

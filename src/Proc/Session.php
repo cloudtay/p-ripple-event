@@ -41,16 +41,13 @@ class Session
     public Closure $onMessage;
 
     /*** @var Stream */
-    private Stream $streamStdInput;
+    public readonly Stream $streamStdInput;
 
     /*** @var Stream */
-    private Stream $streamStdOutput;
+    public readonly Stream $streamStdOutput;
 
     /*** @var Stream */
-    private Stream $streamStdError;
-
-    /*** @var array */
-    private array $status;
+    public readonly Stream $streamStdError;
 
     /**
      * @param mixed $proc
@@ -59,12 +56,11 @@ class Session
      * @param mixed $streamStdError
      */
     public function __construct(
-        private readonly mixed $proc,
-        mixed                  $streamStdInput,
-        mixed                  $streamStdOutput,
-        mixed                  $streamStdError,
+        protected readonly mixed $proc,
+        mixed                    $streamStdInput,
+        mixed                    $streamStdOutput,
+        mixed                    $streamStdError,
     ) {
-        $this->status          = proc_get_status($this->proc);
         $this->streamStdInput = new Stream($streamStdInput);
         $this->streamStdOutput = new Stream($streamStdOutput);
         $this->streamStdError = new Stream($streamStdError);
@@ -130,6 +126,11 @@ class Session
             $this->streamStdError->close();
             $this->streamStdOutput->close();
             $this->streamStdInput->close();
+
+            if (!is_resource($this->proc)) {
+                return;
+            }
+
             try {
                 proc_close($this->proc);
             } catch (Throwable) {
@@ -197,9 +198,16 @@ class Session
      */
     public function getStatus(string $key): mixed
     {
-        return $key
-            ? ($this->status[$key] ?? null)
-            : $this->status;
+        $status = proc_get_status($this->proc);
+        return $key ? ($status[$key] ?? null) : $status;
+    }
+
+    /**
+     * @return mixed
+     */
+    public function getProc(): mixed
+    {
+        return $this->proc;
     }
 
     public function __destruct()
