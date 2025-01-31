@@ -73,7 +73,7 @@ final class Output
      */
     public static function writeln(string $message): void
     {
-        fwrite(STDOUT, $message . PHP_EOL);
+        Output::write($message . PHP_EOL);
     }
 
     /**
@@ -96,5 +96,15 @@ final class Output
     public static function error(string $title, string ...$contents): void
     {
         Output::writeln("\033[31m{$title}\033[0m \033[33m" . implode(' ', $contents) . "\033[0m");
+    }
+
+    /**
+     * @param string $message
+     *
+     * @return void
+     */
+    public static function write(string $message): void
+    {
+        fwrite(STDOUT, $message);
     }
 }

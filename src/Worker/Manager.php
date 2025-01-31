@@ -16,6 +16,7 @@ use Ripple\Kernel;
 use Ripple\Stream\Exception\ConnectionException;
 use Ripple\Utils\Output;
 use Ripple\Utils\Serialization\Zx7e;
+use BadMethodCallException;
 
 use function getmypid;
 use function posix_getpid;
@@ -23,11 +24,12 @@ use function posix_getpid;
 /**
  * @Author cclilshy
  * @Date   2024/8/16 11:51
+ * @method void onCommand(Command $workerCommand, string $name, int $index)
  */
 class Manager
 {
-    public const COMMAND_COMMAND_TO_WORKER = 'manager.commandToWorker';
-    public const COMMAND_COMMAND_TO_ALL    = 'manager.commandToAll';
+    public const COMMAND_COMMAND_TO_WORKER = '__manager__.commandToWorker';
+    public const COMMAND_COMMAND_TO_ALL    = '__manager__.commandToAll';
 
     /**
      * @var Worker[]
@@ -56,8 +58,19 @@ class Manager
      * @param Worker $worker
      *
      * @return void
+     * @deprecated
      */
     public function addWorker(Worker $worker): void
+    {
+        $this->add($worker);
+    }
+
+    /**
+     * @param \Ripple\Worker\Worker $worker
+     *
+     * @return void
+     */
+    public function add(Worker $worker): void
     {
         $workerName = $worker->getName();
         if (isset($this->workers[$workerName])) {
@@ -77,41 +90,31 @@ class Manager
      */
     public function removeWorker(string $name): void
     {
-        if ($this->workers[$name] ?? null) {
-            $this->stopWorker($name);
+        if ($worker = $this->workers[$name] ?? null) {
+            $worker->isRunning() && $this->terminate($name);
             unset($this->workers[$name]);
         }
     }
 
     /**
      * @Author cclilshy
-     * @Date   2024/8/17 10:14
-     *
-     * @param string $name
-     *
-     * @return void
-     */
-    public function stopWorker(string $name): void
-    {
-        if ($worker = $this->workers[$name] ?? null) {
-            foreach ($worker->runtimes as $runtime) {
-                $runtime->stop();
-            }
-            foreach ($worker->streams as $stream) {
-                $stream->close();
-            }
-        }
-    }
-
-    /**
-     * @Author cclilshy
      * @Date   2024/8/17 00:44
+     *
+     * @param string|null $name
+     *
      * @return void
      */
-    public function stop(): void
+    public function terminate(string|null $name = null): void
     {
+        if ($name) {
+            if ($worker = $this->workers[$name] ?? null) {
+                $worker->terminate();
+            }
+            return;
+        }
+
         foreach ($this->workers as $worker) {
-            $this->stopWorker($worker->getName());
+            $worker->terminate();
         }
     }
 
@@ -132,31 +135,37 @@ class Manager
      * @param int     $index
      *
      * @return void
-     * @throws ConnectionException
      */
-    public function onCommand(Command $workerCommand, string $name, int $index): void
+    protected function __onCommand(Command $workerCommand, string $name, int $index): void
     {
         switch ($workerCommand->name) {
-            case Worker::COMMAND_RELOAD:
+            case WorkerContext::COMMAND_RELOAD:
                 $name = $workerCommand->arguments['name'] ?? null;
                 $this->reload($name);
-                return;
-            case Manager::COMMAND_COMMAND_TO_WORKER:
-                $command = $workerCommand->arguments['command'];
-                $target  = $workerCommand->arguments['name'];
-                $this->commandToWorker($command, $target);
                 break;
-            case Manager::COMMAND_COMMAND_TO_ALL:
-                $command = $workerCommand->arguments['command'];
-                $this->commandToAll($command);
-                break;
-            case Worker::COMMAND_SYNC_ID:
+
+            case WorkerContext::COMMAND_SYNC_ID:
                 if ($stream = $this->workers[$name]?->streams[$index] ?? null) {
                     $sync    = $this->index++;
                     $id      = $workerCommand->arguments['id'];
-                    $command = Command::make(Worker::COMMAND_SYNC_ID, ['sync' => $sync, 'id' => $id]);
-                    $stream->write($this->zx7e->encodeFrame($command->__toString()));
+                    $command = Command::make(WorkerContext::COMMAND_SYNC_ID, ['sync' => $sync, 'id' => $id]);
+                    try {
+                        $stream->write($this->zx7e->encodeFrame($command->__toString()));
+                    } catch (ConnectionException $e) {
+                        Output::warning($e->getMessage());
+                    }
                 }
+                break;
+
+            case Manager::COMMAND_COMMAND_TO_WORKER:
+                $command = $workerCommand->arguments['command'];
+                $target  = $workerCommand->arguments['name'];
+                $this->sendCommand($command, $target);
+                break;
+
+            case Manager::COMMAND_COMMAND_TO_ALL:
+                $command = $workerCommand->arguments['command'];
+                $this->sendCommand($command);
                 break;
         }
     }
@@ -168,17 +177,16 @@ class Manager
      * @param string|null $name
      *
      * @return void
-     * @throws ConnectionException
      */
     public function reload(string|null $name = null): void
     {
         if ($name) {
             if (isset($this->workers[$name])) {
-                $this->commandToWorker(Command::make(Worker::COMMAND_RELOAD), $name);
+                $this->sendCommand(Command::make(WorkerContext::COMMAND_RELOAD), $name);
             }
             return;
         }
-        $this->commandToAll(Command::make(Worker::COMMAND_RELOAD));
+        $this->sendCommand(Command::make(WorkerContext::COMMAND_RELOAD));
     }
 
     /**
@@ -189,13 +197,17 @@ class Manager
      * @param string  $name
      *
      * @return void
-     * @throws ConnectionException
+     * @deprecated
      */
     public function commandToWorker(Command $command, string $name): void
     {
         if (isset($this->workers[$name])) {
             foreach ($this->workers[$name]->streams as $stream) {
-                $stream->write($this->zx7e->encodeFrame($command->__toString()));
+                try {
+                    $stream->write($this->zx7e->encodeFrame($command->__toString()));
+                } catch (ConnectionException $e) {
+                    Output::warning($e->getMessage());
+                }
             }
         }
     }
@@ -207,14 +219,50 @@ class Manager
      * @param Command $command
      *
      * @return void
-     * @throws ConnectionException
+     * @deprecated
      */
     public function commandToAll(Command $command): void
     {
         $workers = $this->workers;
         foreach ($workers as $worker) {
             foreach ($worker->streams as $stream) {
-                $stream->write($this->zx7e->encodeFrame($command->__toString()));
+                try {
+                    $stream->write($this->zx7e->encodeFrame($command->__toString()));
+                } catch (ConnectionException $e) {
+                    Output::warning($e->getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * @param \Ripple\Worker\Command $command
+     * @param string|null            $name
+     *
+     * @return void
+     */
+    public function sendCommand(Command $command, string|null $name = null): void
+    {
+        if ($name) {
+            if (isset($this->workers[$name])) {
+                foreach ($this->workers[$name]->streams as $stream) {
+                    try {
+                        $stream->write($this->zx7e->encodeFrame($command->__toString()));
+                    } catch (ConnectionException $e) {
+                        Output::warning($e->getMessage());
+                    }
+                }
+            }
+        } else {
+            $workers = $this->workers;
+            foreach ($workers as $worker) {
+                foreach ($worker->streams as $stream) {
+                    try {
+                        $stream->write($this->zx7e->encodeFrame($command->__toString()));
+                    } catch (ConnectionException $e) {
+                        Output::warning($e->getMessage());
+                    }
+                }
             }
         }
     }
@@ -234,22 +282,40 @@ class Manager
         }
         $this->zx7e = new Zx7e();
         foreach ($this->workers as $worker) {
-            $worker->register($this);
-            if (!$worker($this)) {
+            if (!$worker->run($this)) {
                 Output::error("worker {$worker->getName()} failed to start");
-                $this->stop();
+                $this->terminate();
             }
         }
         return true;
     }
 
+    /**
+     *
+     */
     public function __destruct()
     {
         if (!Kernel::getInstance()->supportProcessControl()) {
             return;
         }
         if (isset($this->processID) && $this->processID === posix_getpid()) {
-            $this->stop();
+            $this->terminate();
         }
+    }
+
+    /**
+     * @param string $name
+     * @param array  $arguments
+     *
+     * @return void
+     */
+    public function __call(string $name, array $arguments): void
+    {
+        if ($name === 'onCommand') {
+            $this->__onCommand(...$arguments);
+            return;
+        }
+
+        throw new BadMethodCallException("Call to undefined method " . static::class . "::{$name}()");
     }
 }
