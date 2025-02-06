@@ -36,12 +36,16 @@ use function pcntl_fork;
 use function pcntl_wait;
 use function pcntl_wexitstatus;
 use function pcntl_wifexited;
+use function pcntl_wifsignaled;
+use function pcntl_wifstopped;
+use function pcntl_wstopsig;
+use function pcntl_wtermsig;
 use function posix_getpid;
 
 use const SIGCHLD;
-use const SIGKILL;
 use const WNOHANG;
 use const WUNTRACED;
+use const SIGTERM;
 
 /**
  * @compatible:Windows
@@ -89,6 +93,9 @@ class Process extends Support
         $this->processID     = posix_getpid();
     }
 
+    /**
+     *
+     */
     public function __destruct()
     {
         $this->destroy();
@@ -100,7 +107,7 @@ class Process extends Support
     private function destroy(): void
     {
         foreach ($this->process2runtime as $runtime) {
-            $runtime->signal(SIGKILL);
+            $runtime->signal(SIGTERM);
         }
     }
 
@@ -301,18 +308,35 @@ class Process extends Support
      */
     private function onProcessExit(int $processID, int $status): void
     {
-        $exit            = pcntl_wifexited($status) ? pcntl_wexitstatus($status) : -1;
+        $exitCode   = -1;
+        $exitReason = '';
+
+        if (pcntl_wifexited($status)) {
+            $exitCode   = pcntl_wexitstatus($status);
+            $exitReason = 'normal exit';
+        } elseif (pcntl_wifsignaled($status)) {
+            $exitCode   = pcntl_wtermsig($status);
+            $exitReason = 'terminated by signal';
+        } elseif (pcntl_wifstopped($status)) {
+            $exitCode   = pcntl_wstopsig($status);
+            $exitReason = 'stopped by signal';
+        }
+
         $promiseCallback = $this->process2promiseCallback[$processID] ?? null;
         if (!$promiseCallback) {
             return;
         }
 
-        if ($exit === -1) {
-            call_user_func($promiseCallback['reject'], new ProcessException('The process is abnormal.', $exit));
+        if ($exitCode !== 0) {
+            call_user_func(
+                $promiseCallback['reject'],
+                new ProcessException("Process failed: {$exitReason}", $exitCode)
+            );
         } else {
-            call_user_func($promiseCallback['resolve'], $exit);
+            call_user_func($promiseCallback['resolve'], $exitCode);
         }
 
+        // Clean up resources
         unset($this->process2promiseCallback[$processID]);
         unset($this->process2runtime[$processID]);
 
@@ -327,5 +351,13 @@ class Process extends Support
     public function getRootProcessID(): int
     {
         return $this->rootProcessID;
+    }
+
+    /**
+     * @return int
+     */
+    public function getProcessID(): int
+    {
+        return $this->processID;
     }
 }

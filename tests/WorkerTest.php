@@ -20,6 +20,7 @@ use Ripple\Worker\Worker;
 
 use function Co\cancelAll;
 use function Co\wait;
+use function sleep;
 
 #[RunClassInSeparateProcess]
 class WorkerTest extends TestCase
@@ -53,7 +54,7 @@ class WorkerTest extends TestCase
 
         $manager->add($worker);
         $this->assertCount(1, $manager->getWorkers());
-        $manager->removeWorker($worker->getName());
+        $manager->remove($worker->getName());
         $this->assertCount(0, $manager->getWorkers());
         cancelAll();
         wait();
@@ -74,6 +75,27 @@ class WorkerTest extends TestCase
         $manager->run();
         $command = Command::make('test.broadcast', ['data' => 'test']);
         $manager->sendCommand($command);
+        $manager->terminate();
+        cancelAll();
+        wait();
+    }
+
+    /**
+     * Test the situation where the worker process exits frequently
+     */
+    public function testWorkerFrequentExit(): void
+    {
+        $manager = new Manager();
+        $worker  = new UnstableWorker();
+        $manager->add($worker);
+
+        $result = $manager->run();
+        $this->assertTrue($result);
+
+        \Co\sleep(1);
+
+        $this->assertTrue($worker->isRunning());
+
         $manager->terminate();
         cancelAll();
         wait();
@@ -105,5 +127,25 @@ class TestWorker extends Worker
      */
     protected function boot(): void
     {
+    }
+}
+
+/**
+ * Simulate unstable work processes
+ */
+class UnstableWorker extends TestWorker
+{
+    /*** @var int */
+    private int $exitCount = 0;
+
+    /**
+     * @return void
+     */
+    protected function boot(): void
+    {
+        if ($this->exitCount < 3) {
+            $this->exitCount++;
+            exit(1);
+        }
     }
 }

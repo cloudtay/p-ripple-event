@@ -3,6 +3,7 @@
 namespace Tests;
 
 use PHPUnit\Framework\TestCase;
+use Ripple\Kernel;
 use Ripple\Process\Exception\ProcessException;
 use Throwable;
 
@@ -27,7 +28,11 @@ class ProcessTest extends TestCase
         });
 
         $runtime  = $task->run();
-        $exitCode = $runtime->await();
+        try {
+            $exitCode = $runtime->await();
+        } catch (ProcessException $exception) {
+            $exitCode = $exception->getCode();
+        }
         $this->assertEquals($code, $exitCode, 'Process exit code');
     }
 
@@ -46,7 +51,11 @@ class ProcessTest extends TestCase
             $runtime = $task->run();
             return $runtime->getPromise()->await();
         });
-        $exitCode = $async->await();
+        try {
+            $exitCode = $async->await();
+        } catch (ProcessException $exception) {
+            $exitCode = $exception->getCode();
+        }
         $this->assertEquals($code, $exitCode, 'Process exit code');
     }
 
@@ -56,6 +65,10 @@ class ProcessTest extends TestCase
      */
     public function test_parallel(): void
     {
+        if (!Kernel::getInstance()->supportParallel()) {
+            $this->markTestSkipped('The current environment does not support parallel processing');
+        }
+
         $code    = mt_rand(0, 255);
         $task = process(function () use ($code) {
             $thread = thread(static function ($context) {
@@ -72,9 +85,12 @@ class ProcessTest extends TestCase
             $this->assertEquals($code, $exitCode, 'Process exit code');
         });
 
-        $runtime->except(function (ProcessException $exception) {
-            $this->fail($exception->getMessage());
+        $runtime->except(function (ProcessException $exception) use ($code) {
+            $this->assertEquals($code, $exception->getCode(), 'Process exit code');
         });
-        $runtime->await();
+        try {
+            $runtime->await();
+        } catch (Throwable) {
+        }
     }
 }

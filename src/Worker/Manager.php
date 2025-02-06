@@ -87,8 +87,19 @@ class Manager
      * @param string $name
      *
      * @return void
+     * @deprecated use remove()
      */
     public function removeWorker(string $name): void
+    {
+        $this->remove($name);
+    }
+
+    /**
+     * @param string $name
+     *
+     * @return void
+     */
+    public function remove(string $name): void
     {
         if ($worker = $this->workers[$name] ?? null) {
             $worker->isRunning() && $this->terminate($name);
@@ -298,6 +309,7 @@ class Manager
         if (!Kernel::getInstance()->supportProcessControl()) {
             return;
         }
+
         if (isset($this->processID) && $this->processID === posix_getpid()) {
             $this->terminate();
         }

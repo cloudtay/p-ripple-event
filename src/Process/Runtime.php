@@ -43,17 +43,11 @@ class Runtime
      * @param bool $force
      *
      * @return void
+     * @deprecated Use stop() instead
      */
     public function stop(bool $force = false): void
     {
-        /*** @compatible:Windows */
-        if (!Kernel::getInstance()->supportProcessControl()) {
-            exit(0);
-        }
-
-        $force
-            ? $this->kill()
-            : $this->signal(SIGTERM);
+        $this->terminate($force);
     }
 
     /*** @return void */
@@ -138,5 +132,22 @@ class Runtime
     public function getPromise(): Promise
     {
         return $this->promise;
+    }
+
+    /**
+     * @param bool $force
+     *
+     * @return void
+     */
+    public function terminate(bool $force = false): void
+    {
+        /*** @compatible:Windows */
+        if (!Kernel::getInstance()->supportProcessControl()) {
+            exit(0);
+        }
+
+        $force
+            ? $this->kill()
+            : $this->signal(SIGTERM);
     }
 }

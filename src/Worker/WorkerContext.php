@@ -13,14 +13,20 @@
 namespace Ripple\Worker;
 
 use Ripple\Kernel;
+use Ripple\Process\Exception\ProcessException;
 use Ripple\Process\Runtime;
 use Ripple\Socket;
+use Ripple\Utils\Output;
 use Ripple\Utils\Serialization\Zx7e;
+use Throwable;
 
 use function Co\delay;
 use function Co\process;
 use function socket_create_pair;
 use function socket_export_stream;
+use function min;
+use function pow;
+use function is_int;
 
 use const AF_INET;
 use const AF_UNIX;
@@ -86,6 +92,14 @@ abstract class WorkerContext
     /*** @var \Ripple\Worker\Manager */
     protected Manager $manager;
 
+    /*** @var array */
+    protected array $restartAttempts = [];
+
+    /**
+     *
+     */
+    private const MAX_RESTART_ATTEMPTS = 10;
+
     /**
      * @return void
      */
@@ -102,27 +116,19 @@ abstract class WorkerContext
             $this->getName()
         );
 
-        //        foreach ($this->runtimes as $runtime) {
-        //            $runtime->stop();
-        //        }
-
-        //        foreach ($this->streams as $stream) {
-        //            $stream->close();
-        //        }
+        $this->running = false;
     }
 
     /**
      * @Author cclilshy
      * @Date   2024/8/17 14:25
      *
-     * @param Manager $manager
      * @param int     $index
      *
      * @return bool
      */
-    private function guard(Manager $manager, int $index): bool
+    private function guard(int $index): bool
     {
-        $this->manager = $manager;
         /*** @compatible:Windows */
         $domain = !Kernel::getInstance()->supportProcessControl() ? AF_INET : AF_UNIX;
 
@@ -138,18 +144,20 @@ abstract class WorkerContext
 
         $zx7e                  = new Zx7e();
         $this->streams[$index] = $streamA;
-        $this->streams[$index]->onReadable(function (Socket $Socket) use ($streamA, $index, &$zx7e, $manager) {
+        $this->streams[$index]->onReadable(function (Socket $Socket) use ($streamA, $index, &$zx7e) {
             $content = $Socket->readContinuously(1024);
             foreach ($zx7e->decodeStream($content) as $string) {
-                $manager->onCommand(Command::fromString($string), $this->getName(), $index);
+                $this->manager->onCommand(
+                    Command::fromString($string),
+                    $this->getName(),
+                    $index
+                );
             }
         });
 
         $this->runtimes[$index] = $runtime = process(function () use ($streamB) {
             $this->parent       = false;
             $this->parentSocket = $streamB;
-            $this->boot();
-            $this->booted = true;
 
             $this->zx7e = new Zx7e();
             $this->parentSocket->onReadable(function (Socket $Socket) {
@@ -180,18 +188,38 @@ abstract class WorkerContext
                     }
                 }
             });
+
+            try {
+                $this->boot();
+                $this->booted = true;
+            } catch (Throwable $exception) {
+                Output::error('Worker boot failed: ' . $exception->getMessage());
+                exit(128);
+            }
         })->run();
 
-        $runtime->finally(fn () => $this->onExit($index));
+        $runtime->finally(function (mixed $result) use ($index) {
+            if (is_int($result)) {
+                $exitCode = $result;
+            } elseif ($result instanceof ProcessException) {
+                $exitCode = $result->getCode();
+            } else {
+                $exitCode = 0;
+            }
+
+            $this->onExit($index, $exitCode);
+        });
+
         return true;
     }
 
     /**
      * @param int $index
+     * @param int $exitCode
      *
      * @return void
      */
-    private function onExit(int $index): void
+    private function onExit(int $index, int $exitCode): void
     {
         if (isset($this->streams[$index])) {
             $this->streams[$index]->close();
@@ -202,10 +230,24 @@ abstract class WorkerContext
             unset($this->runtimes[$index]);
         }
 
+        if ($exitCode === 128) {
+            Output::error("Worker '{$this->getName()}' process has exited with code 1.");
+            return;
+        }
+
+        // Restart the process
         if (!$this->terminated) {
+            $this->restartAttempts[$index] = ($this->restartAttempts[$index] ?? 0) + 1;
+
+            if ($this->restartAttempts[$index] > WorkerContext::MAX_RESTART_ATTEMPTS) {
+                Output::warning('Worker process has exited too many times, please check the code.');
+                return;
+            }
+
+            $delay = min(0.1 * pow(2, $this->restartAttempts[$index] - 1), 30);
             delay(function () use ($index) {
-                $this->guard($this->manager, $index);
-            }, 0.1);
+                $this->guard($index);
+            }, $delay);
         }
     }
 
@@ -220,11 +262,22 @@ abstract class WorkerContext
      */
     public function run(Manager $manager): bool
     {
-        $this->register($manager);
+        $this->manager = $manager;
+
+        try {
+            $this->register($manager);
+        } catch (Throwable $exception) {
+            Output::error("Worker {$this->getName()} registration failed: {$exception->getMessage()}, will be removed");
+            $manager->remove($this->getName());
+            return false;
+        }
+
         /*** @compatible:Windows */
         $count = !Kernel::getInstance()->supportProcessControl() ? 1 : $this->getCount();
         for ($index = 1; $index <= $count; $index++) {
-            if (!$this->guard($manager, $index)) {
+            if (!$this->guard($index)) {
+                $this->terminate();
+                $manager->remove($this->getName());
                 return false;
             }
         }
