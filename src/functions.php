@@ -321,7 +321,7 @@ function resume(EventLoop\Suspension $suspension, mixed $result = null): mixed
  *
  * @return void
  */
-function throw_(EventLoop\Suspension $suspension, Throwable $exception): void
+function __throw(EventLoop\Suspension $suspension, Throwable $exception): void
 {
     Coroutine::throw($suspension, $exception);
 }

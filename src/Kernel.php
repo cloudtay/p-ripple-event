@@ -16,6 +16,7 @@ use Closure;
 use Fiber;
 use Revolt\EventLoop;
 use Revolt\EventLoop\UnsupportedFeatureException;
+use Ripple\Coroutine\Coroutine;
 use Ripple\Coroutine\Suspension;
 use Ripple\Process\Process;
 use Throwable;
@@ -91,7 +92,7 @@ class Kernel
      */
     public function await(Promise $promise): mixed
     {
-        return Coroutine\Coroutine::getInstance()->await($promise);
+        return Coroutine::getInstance()->await($promise);
     }
 
     /**
@@ -115,7 +116,7 @@ class Kernel
      */
     public function async(Closure $closure): Promise
     {
-        return Coroutine\Coroutine::getInstance()->async($closure);
+        return Coroutine::getInstance()->async($closure);
     }
 
     /**
@@ -225,22 +226,23 @@ class Kernel
 
         if (!$this->mainRunning) {
             try {
-                Coroutine\Coroutine::resume($this->mainSuspension, $result);
+                Coroutine::resume($this->mainSuspension, $result);
                 if (Fiber::getCurrent()) {
                     Fiber::suspend();
                 }
             } catch (Throwable) {
                 exit(0);
             }
-        } else {
-            if ($result instanceof Closure) {
-                $result();
-            }
+            return;
+        }
+
+        if ($result instanceof Closure) {
+            $result();
         }
 
         try {
             $this->mainRunning = false;
-            $result = Coroutine\Coroutine::suspend($this->mainSuspension);
+            $result = Coroutine::suspend($this->mainSuspension);
             $this->mainRunning = true;
 
             if ($result instanceof Closure) {
@@ -262,7 +264,7 @@ class Kernel
      */
     public function stop(): void
     {
-        EventLoop::getDriver()->stop();
+        wait(static fn () => EventLoop::getDriver()->stop());
     }
 
     /**
